@@ -1,6 +1,6 @@
 from itertools import chain
 from pypdf import PdfReader
-from datetime import date
+from datetime import date, datetime, timezone
 from enum import Enum
 from dataclasses import dataclass
 import re
@@ -8,6 +8,16 @@ import re
 
 def read_pdf(path: str) -> list[str]:
     reader = PdfReader(path)
+    metadata = reader.metadata
+    if not metadata:
+        raise ValueError("PDF has no metadata")
+    creation_date_str = metadata.get("/CreationDate")
+    if not creation_date_str:
+        raise ValueError("PDF has no creation date")
+    creation_date = datetime.strptime(creation_date_str[2:-1], "%Y%m%d%H%M%S").replace(
+        tzinfo=timezone.utc
+    )
+    print(creation_date.astimezone())
     return [
         page.extract_text(extraction_mode="layout", layout_mode_space_vertically=False)
         # Skip first and last page
