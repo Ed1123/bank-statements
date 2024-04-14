@@ -1,3 +1,4 @@
+from itertools import chain
 from pypdf import PdfReader
 from datetime import date
 from enum import Enum
@@ -81,25 +82,32 @@ def parse_operation_line(line: list[str]) -> Operation:
     raise ValueError("Invalid line")
 
 
-def parse_page_lines(parsed_lines: list[list[str]]) -> list[Holder]:
+def parse_lines(parsed_lines: list[list[str]]) -> list[Holder]:
     holders = []
-    for line in parsed_lines:
+    i = 0
+    while parsed_lines[i][0][:10] != "DETALLE DE":
+        i += 1
+    while i < len(parsed_lines) and parsed_lines[i][1][:10] != "TOTAL PAGO":
+        line = parsed_lines[i]
         if line[0][:10] == "DETALLE DE":
             name, ending_card = line[1].split(" - ")
             holders.append(Holder(name, ending_card, []))
-        elif len(holders) > 0:
+        elif len(line) in [5, 6]:
             holders[-1].operations.append(parse_operation_line(line))
-        elif line[0][:14] == "LIMITE MENSUAL":
-            break
+        i += 1
     return holders
 
 
+def parse_pdf(path: str) -> list[Holder]:
+    pages = read_pdf(path)
+    parsed_lines = list(chain.from_iterable(get_page_lines(page) for page in pages))
+    return parse_lines(parsed_lines)
+
+
 def main():
-    pages = read_pdf("statements/bbva_signature_eecc_24_01.pdf")
-    parsed_lines = [get_page_lines(page) for page in pages]
-    holders = [holder for page in parsed_lines for holder in parse_page_lines(page)]
+    statement = parse_pdf("statements/bbva_signature_eecc_24_01.pdf")
     total = 0
-    for operation in holders[2].operations:
+    for operation in statement[2].operations:
         if operation.currency == Currency.USD:
             continue
         print(operation.amount)
