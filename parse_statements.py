@@ -1,21 +1,33 @@
+import csv
+from dotenv import load_dotenv
 from itertools import chain
-from pypdf import PdfReader
-from datetime import date, datetime, timezone
+import os
+from pypdf import PdfReader, errors
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from enum import Enum
 from dataclasses import dataclass
 import re
 
 
 def read_pdf(path: str) -> list[str]:
-    reader = PdfReader(path)
+    try:
+        reader = PdfReader(path, password=os.environ.get("PDF_PASSWORD"))
+    except errors.PdfReadError:
+        reader = PdfReader(path)
     metadata = reader.metadata
     if not metadata:
         raise ValueError("PDF has no metadata")
-    creation_date_str = metadata.get("/CreationDate")
-    if not creation_date_str:
+    creation_str = metadata.get("/CreationDate")
+    if not creation_str:
         raise ValueError("PDF has no creation date")
-    creation_date = datetime.strptime(creation_date_str[2:-1], "%Y%m%d%H%M%S").replace(
-        tzinfo=timezone.utc
+    creation_datetime_str, creation_tz_str = creation_str[2:16], creation_str[16:]
+    if creation_tz_str == "Z":
+        tzinfo = timezone.utc
+    else:
+        tzinfo = timezone(timedelta(hours=int(creation_tz_str[:-4])))
+
+    creation_date = datetime.strptime(creation_datetime_str, "%Y%m%d%H%M%S").replace(
+        tzinfo=tzinfo
     )
     print(creation_date.astimezone())
     return [
@@ -28,7 +40,7 @@ def read_pdf(path: str) -> list[str]:
 def get_page_lines(page: str) -> list[list[str]]:
     parsed_lines = []
     for line in page.splitlines():
-        parsed_line = re.sub(r' {2,}', '|', line).split('|')
+        parsed_line = re.sub(r' {4,}', '|', line).split('|')
         parsed_lines.append(parsed_line)
     return parsed_lines
 
@@ -95,14 +107,20 @@ def parse_operation_line(line: list[str]) -> Operation:
 def parse_lines(parsed_lines: list[list[str]]) -> list[Holder]:
     holders = []
     i = 0
-    while parsed_lines[i][0][:10] != "DETALLE DE":
+    while not parsed_lines[i][0].lstrip().startswith("DETALLE DE OPERACIONES"):
         i += 1
-    while i < len(parsed_lines) and parsed_lines[i][1][:10] != "TOTAL PAGO":
+    while i < len(parsed_lines):
         line = parsed_lines[i]
-        if line[0][:10] == "DETALLE DE":
-            name, ending_card = line[1].split(" - ")
+        if line[0].startswith("LIMITE MENSUAL"):
+            break
+        if line[0].startswith("DETALLE DE OPERACIONES"):
+            match = re.search(r"(\w+ \w+) - (\d{4})", "|".join(line))
+            if not match:
+                raise ValueError("Invalid holder line", line)
+            name = match.group(1)
+            ending_card = match.group(2)
             holders.append(Holder(name, ending_card, []))
-        elif len(line) in [5, 6]:
+        elif len(line) > 4 and line[1][2:3] == "-":
             holders[-1].operations.append(parse_operation_line(line))
         i += 1
     return holders
@@ -114,6 +132,39 @@ def parse_pdf(path: str) -> list[Holder]:
     return parse_lines(parsed_lines)
 
 
+def save_to_csv(statement: list[Holder], path: str):
+    file = open(path, 'w')
+    csv_writer = csv.writer(file)
+    csv_writer.writerow(
+        ["Name", "Ending Card", "Date", "Description", "Country", "Amount", "Currency"]
+    )
+    for holder in statement:
+        for operation in holder.operations:
+            csv_writer.writerow(
+                [
+                    holder.name,
+                    holder.ending_card,
+                    operation.date,
+                    operation.description,
+                    operation.country,
+                    operation.amount,
+                    operation.currency.value,
+                ]
+            )
+
+
+def parse_files(directory: str):
+    print("Parsing files in", directory)
+    for filename in os.listdir(directory):
+        print(f"Parsing {directory}/{filename}...")
+        if not filename.endswith(".pdf"):
+            continue
+        statement = parse_pdf(f"{directory}/{filename}")
+        output_path = f"{directory}/{filename.removesuffix('.pdf')}.csv"
+        save_to_csv(statement, output_path)
+        print("Saved to", output_path)
+
+
 def main():
     statement = parse_pdf("statements/bbva_signature_eecc_24_01.pdf")
     total = 0
@@ -123,6 +174,10 @@ def main():
         print(operation.amount)
         total += operation.amount
     print(total)
+
+    save_to_csv(statement, "statement.csv")
+    load_dotenv()
+    parse_files("statements")
 
 
 main()
